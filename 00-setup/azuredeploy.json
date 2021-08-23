@@ -2,11 +2,35 @@
     "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
     "contentVersion": "1.0.0.0",
     "parameters": {
-        "vmSize": {
+        "vmName": {
             "type": "string",
-            "defaultValue": "Standard_D8as_v4",
+            "defaultValue": "Arc-K3s-Demo",
             "metadata": {
-                "description": "The size of the VM. Default: Standard_D8as_v4"
+                "description": "The name of you Virtual Machine."
+            }
+        },
+        "adminUsername": {
+            "type": "string",
+            "defaultValue": "arcdemo",
+            "metadata": {
+                "description": "Username for the Virtual Machine."
+            }
+        },
+        "authenticationType": {
+            "type": "string",
+            "defaultValue": "password",
+            "allowedValues": [
+                "sshPublicKey",
+                "password"
+            ],
+            "metadata": {
+                "description": "Type of authentication to use on the Virtual Machine. SSH key is recommended."
+            }
+        },
+        "adminPasswordOrKey": {
+            "type": "securestring",
+            "metadata": {
+                "description": "SSH Key or password for the Virtual Machine. SSH key is recommended."
             }
         },
         "appId": {
@@ -27,11 +51,62 @@
                 "description": "Unique SPN tenant ID"
             }
         },
+        "ubuntuOSVersion": {
+            "type": "string",
+            "defaultValue": "18.04-LTS",
+            "allowedValues": [
+                "18.04-LTS"
+            ],
+            "metadata": {
+                "description": "The Ubuntu version for the VM. This will pick a fully patched image of this given Ubuntu version."
+            }
+        },
         "location": {
             "type": "string",
             "defaultValue": "[resourceGroup().location]",
             "metadata": {
                 "description": "Location for all resources."
+            }
+        },
+        "VmSize": {
+            "type": "string",
+            "defaultValue": "Standard_D8as_v4",
+            "metadata": {
+                "description": "The size of the VM"
+            }
+        },
+        "virtualNetworkName": {
+            "type": "string",
+            "defaultValue": "Arc-K3s-Demo-VNET",
+            "metadata": {
+                "description": "Name of the VNET"
+            }
+        },
+        "subnetName": {
+            "type": "string",
+            "defaultValue": "Subnet",
+            "metadata": {
+                "description": "Name of the subnet in the virtual network"
+            }
+        },
+        "networkSecurityGroupName": {
+            "type": "string",
+            "defaultValue": "Arc-K3s-Demo-NSG",
+            "metadata": {
+                "description": "Name of the Network Security Group"
+            }
+        },
+        "resourceTags": {
+            "type": "object",
+            "defaultValue": {
+                "Project": "jumpstart_azure_arc_k8s"
+            }
+        },
+        "dnsLabelPrefix": {
+            "type": "string",
+            "defaultValue": "[toLower(format('{0}-{1}', parameters('vmName'), uniqueString(resourceGroup().id, deployment().name)))]",
+            "metadata": {
+                "description": "Unique DNS Name for the Public IP used to access the Virtual Machine."
             }
         },
         "githubRepo": {
@@ -50,19 +125,24 @@
         }
     },
     "variables": {
-        "vmName": "[concat('Arc-K3s-', parameters('location'))]",
-        "dnsLabelPrefix": "[toLower(format('{0}-{1}', variables('vmName'), uniqueString(resourceGroup().id, deployment().name)))]",
-        "publicIpAddressName": "[concat(variables('vmName'), '-pip' )]",
-        "networkSecurityGroupName": "[concat(variables('vmName'), '-nsg')]",
-        "networkInterfaceName": "[concat(variables('vmName'),'-nic')]",
-        "virtualNetworkName": "[concat(variables('vmName'), '-vnet')]",
-        "subnetName": "default",
-        "subnetRef": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('virtualNetworkName'), variables('subnetName'))]",
-        "tags": {
-            "Project": "jumpstart_azure_arc_k8s"
-        },
-        "adminUsername": "k8sadmin",
-        "adminPassword": "archack123!!"
+        "vmName": "[concat(parameters('vmName'))]",
+        "publicIpAddressName": "[concat(parameters('vmName'), '-PIP' )]",
+        "networkInterfaceName": "[concat(parameters('vmName'),'-NIC')]",
+        "subnetRef": "[resourceId('Microsoft.Network/virtualNetworks/subnets', parameters('virtualNetworkName'), parameters('subnetName'))]",
+        "osDiskType": "Premium_LRS",
+        "subnetAddressPrefix": "10.1.0.0/24",
+        "addressPrefix": "10.1.0.0/16",
+        "linuxConfiguration": {
+            "disablePasswordAuthentication": "[if(equals(parameters('authenticationType'), 'password'), 'false', 'true')]",
+            "ssh": {
+                "publicKeys": [
+                    {
+                        "path": "[concat('/home/', parameters('adminUsername'), '/.ssh/authorized_keys')]",
+                        "keyData": "[parameters('adminPasswordOrKey')]"
+                    }
+                ]
+            }
+        }
     },
     "resources": [
         {
@@ -71,8 +151,8 @@
             "name": "[variables('networkInterfaceName')]",
             "location": "[parameters('location')]",
             "dependsOn": [
-                "[resourceId('Microsoft.Network/networkSecurityGroups/', variables('networkSecurityGroupName'))]",
-                "[resourceId('Microsoft.Network/virtualNetworks/', variables('virtualNetworkName'))]",
+                "[resourceId('Microsoft.Network/networkSecurityGroups/', parameters('networkSecurityGroupName'))]",
+                "[resourceId('Microsoft.Network/virtualNetworks/', parameters('virtualNetworkName'))]",
                 "[resourceId('Microsoft.Network/publicIpAddresses/', variables('publicIpAddressName'))]"
             ],
             "properties": {
@@ -91,14 +171,14 @@
                     }
                 ],
                 "networkSecurityGroup": {
-                    "id": "[resourceId('Microsoft.Network/networkSecurityGroups',variables('networkSecurityGroupName'))]"
+                    "id": "[resourceId('Microsoft.Network/networkSecurityGroups',parameters('networkSecurityGroupName'))]"
                 }
             }
         },
         {
             "type": "Microsoft.Network/networkSecurityGroups",
             "apiVersion": "2019-02-01",
-            "name": "[variables('networkSecurityGroupName')]",
+            "name": "[parameters('networkSecurityGroupName')]",
             "location": "[parameters('location')]",
             "properties": {
                 "securityRules": [
@@ -199,17 +279,19 @@
         {
             "type": "Microsoft.Network/virtualNetworks",
             "apiVersion": "2019-04-01",
-            "name": "[variables('virtualNetworkName')]",
+            "name": "[parameters('virtualNetworkName')]",
             "location": "[parameters('location')]",
             "properties": {
                 "addressSpace": {
-                    "addressPrefixes": [ "10.1.0.0/16" ]
+                    "addressPrefixes": [
+                        "[variables('addressPrefix')]"
+                    ]
                 },
                 "subnets": [
                     {
-                        "name": "[variables('subnetName')]",
+                        "name": "[parameters('subnetName')]",
                         "properties": {
-                            "addressPrefix": "10.1.0.0/24",
+                            "addressPrefix": "[variables('subnetAddressPrefix')]",
                             "privateEndpointNetworkPolicies": "Enabled",
                             "privateLinkServiceNetworkPolicies": "Enabled"
                         }
@@ -225,7 +307,7 @@
             "properties": {
                 "publicIPAllocationMethod": "Static",
                 "dnsSettings": {
-                    "domainNameLabel": "[variables('dnsLabelPrefix')]"
+                    "domainNameLabel": "[parameters('dnsLabelPrefix')]"
                 },
                 "publicIPAddressVersion": "IPv4",
                 "idleTimeoutInMinutes": 4
@@ -237,10 +319,10 @@
         },
         {
             "type": "Microsoft.Compute/virtualMachines",
-            "apiVersion": "2021-03-01",
+            "apiVersion": "2019-03-01",
             "name": "[variables('vmName')]",
             "location": "[parameters('location')]",
-            "tags": "[variables('tags')]",
+            "tags": "[parameters('resourceTags')]",
             "identity": {
                 "type": "SystemAssigned"
             },
@@ -249,21 +331,21 @@
             ],
             "properties": {
                 "hardwareProfile": {
-                    "vmSize": "[parameters('vmSize')]"
+                    "vmSize": "[parameters('VmSize')]"
                 },
                 "storageProfile": {
                     "osDisk": {
-                        "name": "[concat(variables('vmName'),'-os')]",
+                        "name": "[concat(variables('vmName'),'-OSDisk')]",
                         "caching": "ReadWrite",
                         "createOption": "FromImage",
                         "managedDisk": {
-                            "storageAccountType": "Premium_LRS"
+                            "storageAccountType": "[variables('osDiskType')]"
                         }
                     },
                     "imageReference": {
                         "publisher": "Canonical",
                         "offer": "UbuntuServer",
-                        "sku": "18.04-LTS",
+                        "sku": "[parameters('ubuntuOSVersion')]",
                         "version": "latest"
                     }
                 },
@@ -276,15 +358,16 @@
                 },
                 "osProfile": {
                     "computerName": "[variables('vmName')]",
-                    "adminUsername": "[variables('adminUsername')]",
-                    "adminPassword": "[variables('adminPassword')]"
+                    "adminUsername": "[parameters('adminUsername')]",
+                    "adminPassword": "[parameters('adminPasswordOrKey')]",
+                    "linuxConfiguration": "[if(equals(parameters('authenticationType'), 'password'), json('null'), variables('linuxConfiguration'))]"
                 }
             }
         },
         {
             "type": "Microsoft.Compute/virtualMachines/extensions",
             "name": "[concat(variables('vmName'),'/installscript_k3s')]",
-            "apiVersion": "2021-03-01",
+            "apiVersion": "2019-07-01",
             "location": "[parameters('location')]",
             "dependsOn": [
                 "[concat('Microsoft.Compute/virtualMachines/', variables('vmName'))]"
@@ -298,7 +381,13 @@
                     "timestamp": 123456789
                 },
                 "protectedSettings": {
-                    "commandToExecute": "[concat('bash install_k3s.sh', ' ', variables('adminUsername'), ' ', 'password', ' ', parameters('appId'), ' ', parameters('password'), ' ', parameters('tenantId'), ' ', variables('vmName'), ' ', subscription().subscriptionId, ' ', resourceGroup().name)]",
+                    "commandToExecute": "[concat('bash install_k3s.sh'
+                        , ' \"', parameters('tenantId'), '\" '
+                        , ' \"', subscription().subscriptionId, '\" '
+                        , ' \"', resourceGroup().name, '\" '
+                        , ' \"', parameters('adminUsername'), '\" '
+                        , ' \"', reference(variables('publicIPAddressName')).ipAddress, '\" '
+                        )]",
                     "fileUris": [
                         "[concat('https://raw.githubusercontent.com/', parameters('githubRepo'), '/', parameters('branch'), '/scripts/install_k3s.sh')]"
                     ]
@@ -309,11 +398,11 @@
     "outputs": {
         "adminUsername": {
             "type": "string",
-            "value": "[variables('adminUsername')]"
+            "value": "[parameters('adminUsername')]"
         },
         "sshCommand": {
             "type": "string",
-            "value": "[concat('ssh ', variables('adminUsername'), '@', reference(variables('publicIPAddressName')).dnsSettings.fqdn)]"
+            "value": "[concat('ssh ', parameters('adminUsername'), '@', reference(variables('publicIPAddressName')).dnsSettings.fqdn)]"
         }
     }
 }
